@@ -1,0 +1,60 @@
+name: Auto-Update Weft
+
+on:
+  schedule:
+    # Runs every night at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch: # Allows you to click "Run workflow" manually in GitHub
+
+jobs:
+  check-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for new upstream release
+        run: |
+          set -euo pipefail
+
+          # 1. Fetch latest release from upstream GitHub API
+          RELEASE_DATA=$(curl -sL https://api.github.com/repos/weft-rust/weft/releases/latest)
+          LATEST_TAG=$(echo "$RELEASE_DATA" | jq -r .tag_name)
+          NEW_VERSION="${LATEST_TAG#v}"
+
+          # 2. Find the download URL for the linux-x64 tarball
+          URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("linux-x64\\.tar\\.gz$")) | .browser_download_url')
+
+          CURRENT_VERSION=$(jq -r .version source.json)
+
+          echo "Current version in repo: $CURRENT_VERSION"
+          echo "Latest upstream version: $NEW_VERSION"
+
+          # 3. If a new version exists, calculate hash and update source.json
+          if [ "$NEW_VERSION" != "$CURRENT_VERSION" ] && [ -n "$URL" ]; then
+            echo "New version available! Downloading and generating SRI hash..."
+
+            # Calculate SHA-256 and convert to SRI format
+            HASH="sha256-$(curl -sL "$URL" | sha256sum | awk '{print $1}' | xxd -r -p | base64)"
+
+            # Write updated source.json
+            cat <<EOF > source.json
+          {
+            "version": "$NEW_VERSION",
+            "url": "$URL",
+            "hash": "$HASH"
+          }
+          EOF
+
+            # Commit and push
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add source.json
+            git commit -m "chore: bump weft to v$NEW_VERSION"
+            git push
+            echo "Successfully updated to v$NEW_VERSION!"
+          else
+            echo "Already up-to-date."
+          fi
